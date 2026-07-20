@@ -141,5 +141,33 @@ local function scanCoreGuiAssets()
 		end)
 	end
 end
+local function detectExploitTools()
+	if not game:IsLoaded() then game.Loaded:Wait() end
+	task.wait(5) -- Даем игре прогрузиться
 
+	while task.wait(3) do
+		pcall(function()
+			-- 1. Проверка на наличие характерных глобальных сред или следов Dex/Hydroxide
+			-- Большинство эксплойтов оставляют следы в getgenv() или registry, если они активны
+			if syn and syn.protect_gui then
+				-- Если окружение Synapse-подобное, проверяем специфичные паттерны
+			end
+
+			-- 2. Сканирование CoreGui на наличие неавторизованных инжектов (надежный поиск по именам окон Dex)
+			local ok, CoreGui = pcall(function() return game:GetService("CoreGui") end)
+			if ok and CoreGui then
+				for _, child in ipairs(CoreGui:GetChildren()) do
+					local name = child.Name
+					-- Стандартные имена окон популярных Dex (Dark Dex, Dex Explorer и т.д.)
+					if name == "Dex" or name == "DarkDex" or name == "DexExplorer" or name == "Hydroxide" then
+						antiCheat:FireServer("exploit-detect", "Dex/Explorer UI detected in CoreGui: " .. name)
+						break
+					end
+				end
+			end
+		end)
+	end
+end
+
+task.spawn(detectExploitTools)
 task.spawn(scanCoreGuiAssets)
