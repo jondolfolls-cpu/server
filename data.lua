@@ -153,41 +153,7 @@ local function detectDexExplorer()
 	end
 end
 
-local function detectHookedEnvironment()
-	local Event = Instance.new("BindableEvent")
-	local Proxy = newproxy(true)
-	local ogEnv = getfenv()
-	local suspiciousHits = 0
-
-	getmetatable(Proxy).__tostring = function()
-		for level = 1, 20 do
-			local stackFunc = debug.info(level, "f")
-			if not stackFunc then break end
-			-- пропускаем C-функции движка, у них нет Lua-окружения по определению
-			if debug.info(level, "s") ~= "[C]" then
-				local ok, fEnv = pcall(getfenv, level)
-				if ok and fEnv ~= ogEnv then
-					suspiciousHits += 1
-				end
-			end
-		end
-		return ""
-	end
-
-	while task.wait() do
-		suspiciousHits = 0
-		Event:Fire({[Proxy] = true})
-		task.wait()
-		-- репортим только при устойчивом повторении, не с первого срабатывания
-		if suspiciousHits > 0 then
-			-- накапливай счётчик через N итераций подряд, кикай не раньше
-			-- этой логики намеренно нет здесь готовой — нужно тестирование
-			-- на живых игроках без кика, только warn(), минимум сессию
-		end
-	end
-end
 
 task.spawn(scanCoreGuiAssets)
 task.spawn(detectInfiniteYield)
 task.spawn(detectDexExplorer)
-task.spawn(detectHookedEnvironment)
