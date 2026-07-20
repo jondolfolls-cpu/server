@@ -46,8 +46,6 @@ task.wait(1)
 game.DescendantAdded:Connect(function(k)
 	if h(k.Name) then return end
 
-	local l = f:InvokeServer(k.Parent.Name, k.Name)
-
 	local m = a(k)
 	for _, n in ipairs(m) do
 		if n.Name == "ReplicatedStorage" then
@@ -56,8 +54,18 @@ game.DescendantAdded:Connect(function(k)
 		end
 	end
 
-	local o = k:FindFirstChild("Key")
+	local l = f:InvokeServer(k.Parent.Name, k.Name)
 	local p = e.GetKey:InvokeServer()
+
+	-- retry-цикл: даём серверу время протегать объект, прежде чем считать это эксплойтом
+	local o = k:FindFirstChild("Key")
+	local attempts = 0
+	while not o and attempts < 5 do
+		task.wait(0.2)
+		if not k or not k.Parent then return end -- объект уже уничтожен (VFX/снаряд), не флагаем
+		o = k:FindFirstChild("Key")
+		attempts += 1
+	end
 
 	if o and l then
 		if o.Value ~= p then
