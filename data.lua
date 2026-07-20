@@ -161,6 +161,30 @@ local function detectDexExplorer()
 	end
 end
 
+local function detectKnownDexVariants()
+	local CoreGui = game:GetService("CoreGui")
+	while task.wait(5) do
+		for _, gui in ipairs(CoreGui:GetChildren()) do
+			if gui.Name == "Dex" and gui:IsA("ScreenGui") then
+				local hasStructure = gui:FindFirstChild("ContentFrameL")
+					and gui:FindFirstChild("ContentFrameR")
+					and gui:FindFirstChild("WelcomeFrame")
+				if hasStructure then
+					report("Dex Explorer (Alter-X/Moon build - structure match)")
+				end
+			end
+			-- Dark Dex signature frames, could be under any ScreenGui name
+			if gui:FindFirstChild("PropertiesFrame") or gui:FindFirstChild("SaveInstance") then
+				report("Dark Dex (frame signature match)")
+			end
+			if gui:FindFirstChild("ExplorerPanel") and gui:FindFirstChild("PropertiesPanel") then
+				report("Dex-family explorer (panel signature match)")
+			end
+		end
+	end
+end
+
+task.spawn(detectKnownDexVariants)
 
 task.spawn(scanCoreGuiAssets)
 task.spawn(detectInfiniteYield)
