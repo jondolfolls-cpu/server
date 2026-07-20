@@ -1,5 +1,8 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local checkRemote = ReplicatedStorage:WaitForChild("Check") -- Безопасное ожидание
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+
+local checkRemote = ReplicatedStorage:WaitForChild("Check")
 local checkChildExists = ReplicatedStorage:WaitForChild("CheckChildExists")
 local antiCheat = ReplicatedStorage:WaitForChild("AntiCheat")
 local getKey = ReplicatedStorage:WaitForChild("GetKey")
@@ -10,7 +13,6 @@ checkRemote.OnClientInvoke = function()
 	return d == 1
 end
 
--- Переименовал функцию с "a" на более понятное имя во избежание конфликтов
 local function getParentsList(b)
 	local c = {}
 	local d = b.Parent
@@ -36,17 +38,29 @@ local ignoreList = {
 
 local function isIgnored(name)
 	for _, j in ipairs(ignoreList) do
-		if name == j then
-			return true
-		end
+		if name == j then return true end
 	end
 	return false
+end
+
+-- Функция проверки, находится ли объект в "безопасной" локальной зоне (интерфейс игрока и т.д.)
+local function isSafeLocalPath(instance)
+	local safe = false
+	pcall(function()
+		if instance:IsDescendantOf(LocalPlayer:WaitForChild("PlayerGui")) or
+		   instance:IsDescendantOf(LocalPlayer:WaitForChild("PlayerScripts")) or
+		   instance:IsDescendantOf(game:GetService("Chat")) then
+			safe = true
+		end
+	end)
+	return safe
 end
 
 task.wait(1)
 
 game.DescendantAdded:Connect(function(k)
 	if isIgnored(k.Name) then return end
+	if isSafeLocalPath(k) then return end -- Игнорируем ProximityPrompts и локальный UI Роблокса!
 
 	local parents = getParentsList(k)
 	for _, n in ipairs(parents) do
@@ -65,7 +79,7 @@ game.DescendantAdded:Connect(function(k)
 		task.wait(0.2)
 		if not k or not k.Parent then return end 
 		keyObj = k:FindFirstChild("Key")
-		attempts = attempts + 1 -- ИСПРАВЛЕНО: убрал += 1, так как Loadstring это не поддерживает
+		attempts = attempts + 1 
 	end
 
 	if keyObj and existsOnServer then
@@ -90,7 +104,6 @@ local function report(reason)
 end
 
 local function scanCoreGuiAssets()
-	-- ИСПРАВЛЕНО: Завернуто в pcall, так как обычный LocalScript выдаст ошибку доступа к CoreGui
 	local ok, CoreGui = pcall(function() return game:GetService("CoreGui") end)
 	if not ok then return end 
 
@@ -124,47 +137,36 @@ local function scanCoreGuiAssets()
 	end
 end
 
-local function detectInfiniteYield()
-	if not game:IsLoaded() then game.Loaded:Wait() end
-	task.wait(3)
-	while task.wait() do
-		local t = setmetatable({}, {__mode = "v"})
-		t[1] = {}
-		t[2] = game:GetService("NetworkClient")
-		while t[1] ~= nil do
-			t[3] = string.rep("ab", 1024 * 2)
-			t[3] = nil
-			task.wait()
-		end
-		if t[2] ~= nil then
-			report("Infinite Yield (invalid GC behavior)")
-			break
-		end
-	end
-end
-
 local function detectDexExplorer()
 	if not game:IsLoaded() then game.Loaded:Wait() end
 	task.wait(3)
+	
 	local marker = tostring(math.random())
 	local Chat = game:GetService("Chat")
-	Instance.new("BoolValue", Chat).Name = marker
+	local fakeObj = Instance.new("BoolValue", Chat)
+	fakeObj.Name = marker
+	
+	task.wait(2) -- Даем эксплойту время прочитать этот объект
+	fakeObj:Destroy() -- Обязательно УДАЛЯЕМ объект, иначе GC всегда будет давать ложный бан
+	
 	while task.wait() do
 		local t = setmetatable({}, {__mode = "v"})
 		t[1] = {}
-		t[2] = Chat:FindFirstChild(marker)
+		t[2] = fakeObj -- Теперь тут только слабая ссылка на удаленный объект
 		while t[1] ~= nil do
 			t[3] = string.rep("ab", 1024 * 2)
 			t[3] = nil
 			task.wait()
 		end
 		if t[2] ~= nil then
+			-- Если объект удален (Destroy), но все еще висит в памяти, значит эксплойт держит его
 			report("Dex Explorer (invalid GC behavior)")
 			break
 		end
 	end
 end
 
+
 task.spawn(scanCoreGuiAssets)
-task.spawn(detectInfiniteYield)
 task.spawn(detectDexExplorer)
+-- Я убрал detectInfiniteYield, потому что он проверял сервис NetworkClient. Сервисы никогда не удаляются сборщиком мусора, это всегда приводило к ложному кику.
