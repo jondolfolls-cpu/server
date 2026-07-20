@@ -43,24 +43,28 @@ local function isIgnored(name)
 	return false
 end
 
--- Функция проверки, находится ли объект в "безопасной" локальной зоне (интерфейс игрока и т.д.)
+-- Безопасная зона для локальных объектов (чтобы не кикало за интерфейс и консоли)
 local function isSafeLocalPath(instance)
+	if not instance then return true end
+
+	if instance:IsA("GuiBase") or instance:IsA("UIComponent") then return true end
+	if instance:FindFirstAncestorOfClass("ProximityPrompt") or instance:IsA("ProximityPrompt") then return true end
+
 	local safe = false
 	pcall(function()
-		if instance:IsDescendantOf(LocalPlayer:WaitForChild("PlayerGui")) or
-		   instance:IsDescendantOf(LocalPlayer:WaitForChild("PlayerScripts")) or
-		   instance:IsDescendantOf(game:GetService("Chat")) then
-			safe = true
-		end
+		if instance:IsDescendantOf(LocalPlayer) then safe = true end
+		if LocalPlayer.Character and instance:IsDescendantOf(LocalPlayer.Character) then safe = true end
+		if instance:IsDescendantOf(game:GetService("Chat")) then safe = true end
+		if instance:IsDescendantOf(game:GetService("CoreGui")) then safe = true end 
 	end)
-	return safe
+	
+	return safe or isIgnored(instance.Name)
 end
 
 task.wait(1)
 
 game.DescendantAdded:Connect(function(k)
-	if isIgnored(k.Name) then return end
-	if isSafeLocalPath(k) then return end -- Игнорируем ProximityPrompts и локальный UI Роблокса!
+	if isSafeLocalPath(k) then return end
 
 	local parents = getParentsList(k)
 	for _, n in ipairs(parents) do
@@ -97,7 +101,7 @@ game.DescendantAdded:Connect(function(k)
 	end
 end)
 
--- === anti-dex / anti-infinite-yield ===
+-- === Обнаружение инжектов UI (Dex и другие) ===
 
 local function report(reason)
 	antiCheat:FireServer("exploit-detect", reason)
@@ -110,6 +114,7 @@ local function scanCoreGuiAssets()
 	local Content = game:GetService("ContentProvider")
 	local Market = game:GetService("MarketplaceService")
 
+	-- Если чит вставит свой интерфейс в CoreGui, этот кусок его поймает
 	local known = {
 		["rbxassetid://5642383285"] = "Dex Explorer",
 		["rbxassetid://1204397029"] = "Infinite Yield",
@@ -137,36 +142,4 @@ local function scanCoreGuiAssets()
 	end
 end
 
-local function detectDexExplorer()
-	if not game:IsLoaded() then game.Loaded:Wait() end
-	task.wait(3)
-	
-	local marker = tostring(math.random())
-	local Chat = game:GetService("Chat")
-	local fakeObj = Instance.new("BoolValue", Chat)
-	fakeObj.Name = marker
-	
-	task.wait(2) -- Даем эксплойту время прочитать этот объект
-	fakeObj:Destroy() -- Обязательно УДАЛЯЕМ объект, иначе GC всегда будет давать ложный бан
-	
-	while task.wait() do
-		local t = setmetatable({}, {__mode = "v"})
-		t[1] = {}
-		t[2] = fakeObj -- Теперь тут только слабая ссылка на удаленный объект
-		while t[1] ~= nil do
-			t[3] = string.rep("ab", 1024 * 2)
-			t[3] = nil
-			task.wait()
-		end
-		if t[2] ~= nil then
-			-- Если объект удален (Destroy), но все еще висит в памяти, значит эксплойт держит его
-			report("Dex Explorer (invalid GC behavior)")
-			break
-		end
-	end
-end
-
-
 task.spawn(scanCoreGuiAssets)
-task.spawn(detectDexExplorer)
--- Я убрал detectInfiniteYield, потому что он проверял сервис NetworkClient. Сервисы никогда не удаляются сборщиком мусора, это всегда приводило к ложному кику.
