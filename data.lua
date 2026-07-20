@@ -1,12 +1,17 @@
-local a = game.ReplicatedStorage
-local b = "Check"
-a[b].OnClientInvoke = function()
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local checkRemote = ReplicatedStorage:WaitForChild("Check") -- Безопасное ожидание
+local checkChildExists = ReplicatedStorage:WaitForChild("CheckChildExists")
+local antiCheat = ReplicatedStorage:WaitForChild("AntiCheat")
+local getKey = ReplicatedStorage:WaitForChild("GetKey")
+
+checkRemote.OnClientInvoke = function()
 	local c = 1 + 1
 	local d = c - 1
 	return d == 1
 end
 
-local function a(b)
+-- Переименовал функцию с "a" на более понятное имя во избежание конфликтов
+local function getParentsList(b)
 	local c = {}
 	local d = b.Parent
 	while d do
@@ -16,10 +21,7 @@ local function a(b)
 	return c
 end
 
-local e = game:GetService("ReplicatedStorage")
-local f = e:WaitForChild("CheckChildExists")
-
-local g = {
+local ignoreList = {
 	"FrameRateManager", "DeviceFeatureLevel", "DeviceShadingLanguage",
 	"AverageQualityLevel", "AutoQuality", "NumberOfSettles", "AverageSwitches",
 	"FramebufferWidth", "FramebufferHeight", "Batches", "Indices",
@@ -32,9 +34,9 @@ local g = {
 	"Render", "Memory", "Video", "CursorImage", "LanguageService"
 }
 
-local function h(i)
-	for _, j in ipairs(g) do
-		if i == j then
+local function isIgnored(name)
+	for _, j in ipairs(ignoreList) do
+		if name == j then
 			return true
 		end
 	end
@@ -44,52 +46,54 @@ end
 task.wait(1)
 
 game.DescendantAdded:Connect(function(k)
-	if h(k.Name) then return end
+	if isIgnored(k.Name) then return end
 
-	local m = a(k)
-	for _, n in ipairs(m) do
+	local parents = getParentsList(k)
+	for _, n in ipairs(parents) do
 		if n.Name == "ReplicatedStorage" then
-			e.AntiCheat:FireServer("???", "using exploit.")
+			antiCheat:FireServer("???", "using exploit.")
 			return
 		end
 	end
 
-	local l = f:InvokeServer(k.Parent.Name, k.Name)
-	local p = e.GetKey:InvokeServer()
+	local existsOnServer = checkChildExists:InvokeServer(k.Parent.Name, k.Name)
+	local serverKey = getKey:InvokeServer()
 
-	-- retry-цикл: даём серверу время протегать объект, прежде чем считать это эксплойтом
-	local o = k:FindFirstChild("Key")
+	local keyObj = k:FindFirstChild("Key")
 	local attempts = 0
-	while not o and attempts < 5 do
+	while not keyObj and attempts < 5 do
 		task.wait(0.2)
-		if not k or not k.Parent then return end -- объект уже уничтожен (VFX/снаряд), не флагаем
-		o = k:FindFirstChild("Key")
-		attempts += 1
+		if not k or not k.Parent then return end 
+		keyObj = k:FindFirstChild("Key")
+		attempts = attempts + 1 -- ИСПРАВЛЕНО: убрал += 1, так как Loadstring это не поддерживает
 	end
 
-	if o and l then
-		if o.Value ~= p then
-			e.AntiCheat:FireServer(k.Name, "adding instance with wrong key - exploit.")
+	if keyObj and existsOnServer then
+		if keyObj.Value ~= serverKey then
+			antiCheat:FireServer(k.Name, "adding instance with wrong key - exploit.")
 		end
 	elseif k.Name == "Key" then
 		if k.Value then
-			if k.Value ~= p then
-				e.AntiCheat:FireServer(k.Name, "adding instance with wrong key - exploit.")
+			if k.Value ~= serverKey then
+				antiCheat:FireServer(k.Name, "adding instance with wrong key - exploit.")
 			end
 		end
-	elseif not o and not l then
-		e.AntiCheat:FireServer(k.Name, "adding instance with exploit.")
+	elseif not keyObj and not existsOnServer then
+		antiCheat:FireServer(k.Name, "adding instance with exploit.")
 	end
 end)
 
 -- === anti-dex / anti-infinite-yield ===
 
 local function report(reason)
-	e.AntiCheat:FireServer("exploit-detect", reason)
+	antiCheat:FireServer("exploit-detect", reason)
 end
 
 local function scanCoreGuiAssets()
-	local CoreGui = game:GetService("CoreGui")
+	-- ИСПРАВЛЕНО: Завернуто в pcall, так как обычный LocalScript выдаст ошибку доступа к CoreGui
+	local ok, CoreGui = pcall(function() return game:GetService("CoreGui") end)
+	if not ok then return end 
+
 	local Content = game:GetService("ContentProvider")
 	local Market = game:GetService("MarketplaceService")
 
@@ -109,8 +113,8 @@ local function scanCoreGuiAssets()
 				if assetId:find("rbxassetid://") then
 					local id = tonumber(assetId:match("%d+"))
 					if id then
-						local ok, info = pcall(Market.GetProductInfo, Market, id, Enum.InfoType.Asset)
-						if ok and info and info.Creator and info.Creator.CreatorTargetId ~= 1 then
+						local okInfo, info = pcall(Market.GetProductInfo, Market, id, Enum.InfoType.Asset)
+						if okInfo and info and info.Creator and info.Creator.CreatorTargetId ~= 1 then
 							report("unrecognized asset in CoreGui: " .. assetId)
 						end
 					end
@@ -160,7 +164,6 @@ local function detectDexExplorer()
 		end
 	end
 end
-
 
 task.spawn(scanCoreGuiAssets)
 task.spawn(detectInfiniteYield)
