@@ -54,17 +54,27 @@ game.DescendantAdded:Connect(function(k)
 		end
 	end
 
-	local l = f:InvokeServer(k.Parent.Name, k.Name)
-	local p = e.GetKey:InvokeServer()
-
-	local o = k:FindFirstChild("Key")
+	-- retry both проверки: объект может быть уничтожен раньше, чем сервер успеет его протегать
+	local o, l
 	local attempts = 0
-	while not o and attempts < 5 do
-		task.wait(0.2)
-		if not k or not k.Parent then return end
+	while attempts < 5 do
+		if not k or not k.Parent then return end -- объект уже уничтожен - легитимный короткоживущий VFX/снаряд, не флагаем
+
 		o = k:FindFirstChild("Key")
+		local ok, result = pcall(function()
+			return f:InvokeServer(k.Parent.Name, k.Name)
+		end)
+		l = ok and result
+
+		if o or l then break end
+
+		task.wait(0.2)
 		attempts = attempts + 1
 	end
+
+	if not k or not k.Parent then return end
+
+	local p = e.GetKey:InvokeServer()
 
 	if o and l then
 		if o.Value ~= p then
@@ -77,7 +87,9 @@ game.DescendantAdded:Connect(function(k)
 			end
 		end
 	elseif not o and not l then
-		e.AntiCheat:FireServer(k.Name, "adding instance with exploit.", "hard")
+		-- после ретраев объект всё ещё существует, но не протегался и не подтверждён сервером
+		-- это подозрительно, но недостаточно надёжно для мгновенного кика на старте игры
+		e.AntiCheat:FireServer(k.Name, "adding instance with exploit.", "soft")
 	end
 end)
 
