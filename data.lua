@@ -63,7 +63,7 @@ game.DescendantAdded:Connect(function(k)
 		task.wait(0.2)
 		if not k or not k.Parent then return end
 		o = k:FindFirstChild("Key")
-		attempts += 1
+		attempts = attempts + 1
 	end
 
 	if o and l then
@@ -225,7 +225,7 @@ local function onMouseWheel(input)
 		RunService.RenderStepped:Wait()
 		local after = getCameraDistance()
 		local delta = after - before
-		totalDelta += delta
+		totalDelta = totalDelta + delta
 		maxDelta = math.max(maxDelta, math.abs(delta))
 		before = after
 	end
@@ -242,7 +242,7 @@ local function onMouseWheel(input)
 			scrollWindowStart = now
 			scrollCount = 0
 		end
-		scrollCount += 1
+		scrollCount = scrollCount + 1
 		if scrollCount >= 10 then
 			reportSoft("scroll input consumed without camera response (possible overlay UI)")
 			scrollCount = 0
