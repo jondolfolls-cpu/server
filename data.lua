@@ -6,14 +6,27 @@ a[b].OnClientInvoke = function()
 	return d == 1
 end
 
-local function a(b)
-	local c = {}
-	local d = b.Parent
-	while d do
-		table.insert(c, d)
-		d = d.Parent
+-- собирает цепочку предков объекта
+local function getAncestors(obj)
+	local chain = {}
+	local par = obj.Parent
+	while par do
+		table.insert(chain, par)
+		par = par.Parent
 	end
-	return c
+	return chain
+end
+
+-- CoreGui - клиентское виртуальное пространство (F9-консоль, чат, лидерборд и т.д.)
+-- сервер никогда не тегает объекты внутри него ключом, поэтому его нужно полностью
+-- исключать из проверки, иначе штатный Roblox UI флагается как эксплойт
+local function isUnderCoreGui(obj)
+	local par = obj
+	while par do
+		if par.Name == "CoreGui" then return true end
+		par = par.Parent
+	end
+	return false
 end
 
 local e = game:GetService("ReplicatedStorage")
@@ -45,20 +58,20 @@ task.wait(1)
 
 game.DescendantAdded:Connect(function(k)
 	if h(k.Name) then return end
+	if isUnderCoreGui(k) then return end -- штатный Roblox UI (F9, чат, лидерборд) - не проверяем
 
-	local m = a(k)
-	for _, n in ipairs(m) do
+	local chain = getAncestors(k)
+	for _, n in ipairs(chain) do
 		if n.Name == "ReplicatedStorage" then
 			e.AntiCheat:FireServer("???", "using exploit.", "hard")
 			return
 		end
 	end
 
-	-- retry both проверки: объект может быть уничтожен раньше, чем сервер успеет его протегать
 	local o, l
 	local attempts = 0
 	while attempts < 5 do
-		if not k or not k.Parent then return end -- объект уже уничтожен - легитимный короткоживущий VFX/снаряд, не флагаем
+		if not k or not k.Parent then return end -- уничтожен раньше проверки - короткоживущий VFX/снаряд, не флагаем
 
 		o = k:FindFirstChild("Key")
 		local ok, result = pcall(function()
@@ -87,13 +100,16 @@ game.DescendantAdded:Connect(function(k)
 			end
 		end
 	elseif not o and not l then
-		-- после ретраев объект всё ещё существует, но не протегался и не подтверждён сервером
-		-- это подозрительно, но недостаточно надёжно для мгновенного кика на старте игры
 		e.AntiCheat:FireServer(k.Name, "adding instance with exploit.", "soft")
 	end
 end)
 
 -- === anti-dex / anti-infinite-yield ===
+-- GC-based детекты (проверка через сборщик мусора) убраны полностью:
+-- они завязаны на точное время срабатывания GC, что ненадёжно само по себе,
+-- а под кастомным Lua-VM (Rerubi) тайминги искажаются ещё сильнее.
+-- Именно это давало и ложные срабатывания, и краш Code(182), и нестабильность "через раз".
+-- Оставлены только детерминированные проверки: по asset ID и по структуре интерфейса.
 
 local function reportHard(reason)
 	e.AntiCheat:FireServer("exploit-detect", reason, "hard")
@@ -135,65 +151,33 @@ local function scanCoreGuiAssets()
 	end
 end
 
-local function detectInfiniteYield()
-	if not game:IsLoaded() then game.Loaded:Wait() end
-	task.wait(3)
-	while task.wait() do
-		local t = setmetatable({}, {__mode = "v"})
-		t[1] = {}
-		t[2] = game:GetService("NetworkClient")
-		while t[1] ~= nil do
-			t[3] = string.rep("ab", 1024 * 2)
-			t[3] = nil
-			task.wait()
-		end
-		if t[2] ~= nil then
-			reportHard("Infinite Yield (invalid GC behavior)")
-			break
-		end
-	end
-end
-
-local function detectDexExplorer()
-	if not game:IsLoaded() then game.Loaded:Wait() end
-	task.wait(3)
-	local marker = tostring(math.random())
-	local Chat = game:GetService("Chat")
-	Instance.new("BoolValue", Chat).Name = marker
-	while task.wait() do
-		local t = setmetatable({}, {__mode = "v"})
-		t[1] = {}
-		t[2] = Chat:FindFirstChild(marker)
-		while t[1] ~= nil do
-			t[3] = string.rep("ab", 1024 * 2)
-			t[3] = nil
-			task.wait()
-		end
-		if t[2] ~= nil then
-			reportHard("Dex Explorer (invalid GC behavior)")
-			break
-		end
-	end
-end
-
 local function detectKnownDexVariants()
-	local CoreGui = game:GetService("CoreGui")
 	while task.wait(5) do
-		for _, gui in ipairs(CoreGui:GetChildren()) do
-			if gui.Name == "Dex" and gui:IsA("ScreenGui") then
-				local hasStructure = gui:FindFirstChild("ContentFrameL")
-					and gui:FindFirstChild("ContentFrameR")
-					and gui:FindFirstChild("WelcomeFrame")
-				if hasStructure then
-					reportHard("Dex Explorer (Alter-X/Moon build - structure match)")
+		local ok, err = pcall(function()
+			local CoreGui = game:GetService("CoreGui")
+			for _, gui in ipairs(CoreGui:GetChildren()) do
+				if gui.Name == "RobloxGui" then
+					-- это собственный UI Roblox (топбар, чат, F9-консоль и т.д.) - пропускаем целиком
+				else
+					if gui.Name == "Dex" and gui:IsA("ScreenGui") then
+						local hasStructure = gui:FindFirstChild("ContentFrameL")
+							and gui:FindFirstChild("ContentFrameR")
+							and gui:FindFirstChild("WelcomeFrame")
+						if hasStructure then
+							reportHard("Dex Explorer (Alter-X/Moon build - structure match)")
+						end
+					end
+					if gui:FindFirstChild("PropertiesFrame") or gui:FindFirstChild("SaveInstance") then
+						reportHard("Dark Dex (frame signature match)")
+					end
+					if gui:FindFirstChild("ExplorerPanel") and gui:FindFirstChild("PropertiesPanel") then
+						reportHard("Dex-family explorer (panel signature match)")
+					end
 				end
 			end
-			if gui:FindFirstChild("PropertiesFrame") or gui:FindFirstChild("SaveInstance") then
-				reportHard("Dark Dex (frame signature match)")
-			end
-			if gui:FindFirstChild("ExplorerPanel") and gui:FindFirstChild("PropertiesPanel") then
-				reportHard("Dex-family explorer (panel signature match)")
-			end
+		end)
+		if not ok then
+			warn("[antidex] detectKnownDexVariants error (safely caught): " .. tostring(err))
 		end
 	end
 end
@@ -265,6 +249,4 @@ end
 UserInputService.InputChanged:Connect(onMouseWheel)
 
 task.spawn(scanCoreGuiAssets)
-task.spawn(detectInfiniteYield)
-task.spawn(detectDexExplorer)
 task.spawn(detectKnownDexVariants)
