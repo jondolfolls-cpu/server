@@ -6,7 +6,6 @@ a[b].OnClientInvoke = function()
 	return d == 1
 end
 
--- собирает цепочку предков объекта
 local function getAncestors(obj)
 	local chain = {}
 	local par = obj.Parent
@@ -17,9 +16,6 @@ local function getAncestors(obj)
 	return chain
 end
 
--- CoreGui - клиентское виртуальное пространство (F9-консоль, чат, лидерборд и т.д.)
--- сервер никогда не тегает объекты внутри него ключом, поэтому его нужно полностью
--- исключать из проверки, иначе штатный Roblox UI флагается как эксплойт
 local function isUnderCoreGui(obj)
 	local par = obj
 	while par do
@@ -58,7 +54,7 @@ task.wait(1)
 
 game.DescendantAdded:Connect(function(k)
 	if h(k.Name) then return end
-	if isUnderCoreGui(k) then return end -- штатный Roblox UI (F9, чат, лидерборд) - не проверяем
+	if isUnderCoreGui(k) then return end
 
 	local chain = getAncestors(k)
 	for _, n in ipairs(chain) do
@@ -71,7 +67,7 @@ game.DescendantAdded:Connect(function(k)
 	local o, l
 	local attempts = 0
 	while attempts < 5 do
-		if not k or not k.Parent then return end -- уничтожен раньше проверки - короткоживущий VFX/снаряд, не флагаем
+		if not k or not k.Parent then return end
 
 		o = k:FindFirstChild("Key")
 		local ok, result = pcall(function()
@@ -105,22 +101,16 @@ game.DescendantAdded:Connect(function(k)
 end)
 
 -- === anti-dex / anti-infinite-yield ===
--- GC-based детекты (проверка через сборщик мусора) убраны полностью:
--- они завязаны на точное время срабатывания GC, что ненадёжно само по себе,
--- а под кастомным Lua-VM (Rerubi) тайминги искажаются ещё сильнее.
--- Именно это давало и ложные срабатывания, и краш Code(182), и нестабильность "через раз".
--- Оставлены только детерминированные проверки: по asset ID и по структуре интерфейса.
 
 local function reportHard(reason)
 	e.AntiCheat:FireServer("exploit-detect", reason, "hard")
 end
 
-local function reportSoft(reason)
-	e.AntiCheat:FireServer("exploit-detect", reason, "soft")
-end
-
+-- 1. Asset-ID сканирование (расширенный список из форума devforum.roblox.com/t/detect-scripts-and-exploits/3368051)
 local function scanCoreGuiAssets()
 	local CoreGui = game:GetService("CoreGui")
+	if not CoreGui then return end
+
 	local Content = game:GetService("ContentProvider")
 	local Market = game:GetService("MarketplaceService")
 
@@ -128,125 +118,119 @@ local function scanCoreGuiAssets()
 		["rbxassetid://5642383285"] = "Dex Explorer",
 		["rbxassetid://1204397029"] = "Infinite Yield",
 		["rbxassetid://4702850565"] = "Hydroxide",
+		["rbxassetid://137842439297855"] = "known exploit UI",
+		["rbxassetid://2764171053"] = "known exploit UI",
+		["rbxassetid://1352543873"] = "known exploit UI",
 	}
 
 	while task.wait(7) do
-		pcall(function()
+		local preloadOk = pcall(function()
 			Content:PreloadAsync({CoreGui}, function(assetId, _status)
-				if known[assetId] then
-					reportHard(known[assetId])
+				local knownName = known[assetId]
+				if knownName then
+					reportHard(knownName)
 					return
 				end
-				if assetId:find("rbxassetid://") then
+				local hasPrefix = assetId:find("rbxassetid://")
+				if hasPrefix then
 					local id = tonumber(assetId:match("%d+"))
 					if id then
-						local ok, info = pcall(Market.GetProductInfo, Market, id, Enum.InfoType.Asset)
-						if ok and info and info.Creator and info.Creator.CreatorTargetId ~= 1 then
+						local infoOk, info = pcall(Market.GetProductInfo, Market, id, Enum.InfoType.Asset)
+						if infoOk and info and info.Creator and info.Creator.CreatorTargetId ~= 1 then
 							reportHard("unrecognized asset in CoreGui: " .. assetId)
 						end
 					end
 				end
 			end)
 		end)
+		if not preloadOk then
+			warn("[antidex] scanCoreGuiAssets: PreloadAsync ошибка (безопасно поймана)")
+		end
 	end
 end
 
+-- 2. Структурное сканирование (плоский код, без вложенных if/elseif - обход бага компилятора Rerubi)
 local function detectKnownDexVariants()
 	while task.wait(5) do
 		local ok, err = pcall(function()
 			local CoreGui = game:GetService("CoreGui")
-			for _, gui in ipairs(CoreGui:GetChildren()) do
-				if gui.Name == "RobloxGui" then
-					-- это собственный UI Roblox (топбар, чат, F9-консоль и т.д.) - пропускаем целиком
-				else
-					if gui.Name == "Dex" and gui:IsA("ScreenGui") then
-						local hasStructure = gui:FindFirstChild("ContentFrameL")
-							and gui:FindFirstChild("ContentFrameR")
-							and gui:FindFirstChild("WelcomeFrame")
-						if hasStructure then
-							reportHard("Dex Explorer (Alter-X/Moon build - structure match)")
+			if not CoreGui then return end
+
+			local children = CoreGui:GetChildren()
+			if not children then return end
+
+			for _, gui in ipairs(children) do
+				local guiName = gui.Name
+
+				local skipThis = (guiName == "RobloxGui")
+
+				if not skipThis then
+					if guiName == "Dex" then
+						local isScreenGui = gui:IsA("ScreenGui")
+						if isScreenGui then
+							local hasL = gui:FindFirstChild("ContentFrameL")
+							local hasR = gui:FindFirstChild("ContentFrameR")
+							local hasWelcome = gui:FindFirstChild("WelcomeFrame")
+							local structMatch = hasL and hasR and hasWelcome
+							if structMatch then
+								reportHard("Dex Explorer (Alter-X/Moon build - structure match)")
+							end
 						end
 					end
-					if gui:FindFirstChild("PropertiesFrame") or gui:FindFirstChild("SaveInstance") then
+
+					local propFrame = gui:FindFirstChild("PropertiesFrame")
+					local saveInstance = gui:FindFirstChild("SaveInstance")
+					local darkDexMatch = propFrame or saveInstance
+					if darkDexMatch then
 						reportHard("Dark Dex (frame signature match)")
 					end
-					if gui:FindFirstChild("ExplorerPanel") and gui:FindFirstChild("PropertiesPanel") then
+
+					local explorerPanel = gui:FindFirstChild("ExplorerPanel")
+					local propertiesPanel = gui:FindFirstChild("PropertiesPanel")
+					local panelMatch = explorerPanel and propertiesPanel
+					if panelMatch then
 						reportHard("Dex-family explorer (panel signature match)")
 					end
 				end
 			end
 		end)
 		if not ok then
-			warn("[antidex] detectKnownDexVariants error (safely caught): " .. tostring(err))
+			warn("[antidex] detectKnownDexVariants ошибка (безопасно поймана): " .. tostring(err))
 		end
 	end
 end
 
-local Players = game:GetService("Players")
-local UserInputService = game:GetService("UserInputService")
-local GuiService = game:GetService("GuiService")
-local RunService = game:GetService("RunService")
-local LocalPlayer = Players.LocalPlayer
-local Camera = workspace.CurrentCamera
+-- 3. HoneyPot: универсальный GC-детект держания ссылки на CoreGui
+-- источник техники: devforum.roblox.com/t/coregui-reference-detection/2645406 (XoifailTheGod)
+-- ловит любой скрипт, который держит ссылку на CoreGui/объекты в нём (типично для Dex, IY, JJSploit
+-- и большинства несинапс-экзекьюторов), не завязан на конкретную структуру или asset ID
+local function detectCoreGuiHoneypot()
+	while task.wait(2) do
+		local ok, err = pcall(function()
+			local CoreGui = game:GetService("CoreGui")
+			if not CoreGui then return end
 
-local scrollWindowStart = 0
-local scrollCount = 0
+			local honeyPot = setmetatable(
+				{CoreGui, {}, newproxy(true), newproxy()},
+				{__mode = "v"}
+			)
 
-local function isMouseInAnyGui()
-	local mousePos = UserInputService:GetMouseLocation() - GuiService:GetGuiInset()
-	local playerGui = LocalPlayer:WaitForChild("PlayerGui")
-	for _, gui in ipairs(playerGui:GetGuiObjectsAtPosition(mousePos.X, mousePos.Y)) do
-		if gui:IsA("GuiObject") then
-			return true
-		end
-	end
-	return false
-end
+			local waited = 0
+			while honeyPot[2] and honeyPot[3] and honeyPot[4] and waited < 50 do
+				task.wait()
+				waited = waited + 1
+			end
 
-local function getCameraDistance()
-	local character = LocalPlayer.Character
-	if not character then return 0 end
-	local head = character:FindFirstChild("Head")
-	if not head then return 0 end
-	return (Camera.CFrame.Position - head.Position).Magnitude
-end
-
-local function onMouseWheel(input)
-	if input.UserInputType ~= Enum.UserInputType.MouseWheel then return end
-	if isMouseInAnyGui() then return end
-
-	local before = getCameraDistance()
-	local maxDelta, totalDelta = 0, 0
-	for _ = 1, 5 do
-		RunService.RenderStepped:Wait()
-		local after = getCameraDistance()
-		local delta = after - before
-		totalDelta = totalDelta + delta
-		maxDelta = math.max(maxDelta, math.abs(delta))
-		before = after
-	end
-
-	local minZoom = LocalPlayer.CameraMinZoomDistance
-	local maxZoom = LocalPlayer.CameraMaxZoomDistance
-	local distance = getCameraDistance()
-	if distance <= minZoom + 0.2 or distance >= maxZoom - 0.2 then return end
-
-	local threshold = math.max(0.02, distance * 0.003)
-	if maxDelta < threshold and math.abs(totalDelta) < threshold then
-		local now = tick()
-		if now - scrollWindowStart > 0.5 then
-			scrollWindowStart = now
-			scrollCount = 0
-		end
-		scrollCount = scrollCount + 1
-		if scrollCount >= 10 then
-			reportSoft("scroll input consumed without camera response (possible overlay UI)")
-			scrollCount = 0
+			if honeyPot[1] then
+				reportHard("посторонняя ссылка удерживает CoreGui (HoneyPot GC-детект)")
+			end
+		end)
+		if not ok then
+			warn("[antidex] detectCoreGuiHoneypot ошибка (безопасно поймана): " .. tostring(err))
 		end
 	end
 end
-
-UserInputService.InputChanged:Connect(onMouseWheel)
 
 task.spawn(scanCoreGuiAssets)
 task.spawn(detectKnownDexVariants)
+task.spawn(detectCoreGuiHoneypot)
