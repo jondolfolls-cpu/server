@@ -68,7 +68,7 @@ game.DescendantAdded:Connect(function(k)
 	local o, l
 	local attempts = 0
 	while attempts < 5 do
-		if not k or not k.Parent then return end -- уничтожен - короткоживущий VFX, легитимно
+		if not k or not k.Parent then return end
 
 		o = k:FindFirstChild("Key")
 		local ok, result = pcall(function()
@@ -76,7 +76,7 @@ game.DescendantAdded:Connect(function(k)
 		end)
 		l = ok and result
 
-		if o or l then break end -- ключ появился или сервер подтвердил - легитимный объект
+		if o or l then break end
 
 		task.wait(0.2)
 		attempts = attempts + 1
@@ -97,8 +97,6 @@ game.DescendantAdded:Connect(function(k)
 			end
 		end
 	elseif not o and not l then
-		-- после целой секунды ретраев объект всё ещё без ключа и не подтверждён сервером.
-		-- легитимная гонка на старте разрешилась бы за это время. это Dex - кикаем сразу.
 		e.AntiCheat:FireServer(k.Name, "adding instance with exploit.", "hard")
 	end
 end)
