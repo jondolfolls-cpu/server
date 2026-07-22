@@ -101,11 +101,10 @@ game.DescendantAdded:Connect(function(k)
 	end
 end)
 
--- === anti-dex / anti-infinite-yield (без task.spawn - только connections и Heartbeat) ===
+-- === anti-dex / anti-infinite-yield (connection + Heartbeat) ===
 
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
-local GuiService = game:GetService("GuiService")
 local Players = game:GetService("Players")
 local ContentProvider = game:GetService("ContentProvider")
 local MarketplaceService = game:GetService("MarketplaceService")
@@ -115,57 +114,25 @@ local function reportHard(reason)
 	e.AntiCheat:FireServer("exploit-detect", reason, "hard")
 end
 
--- ── 1. TextBoxFocused: клик в поле поиска Dex (оно в CoreGui, не в PlayerGui) ──
+-- ── TextBoxFocused: клик в поле ввода вне PlayerGui = поле из CoreGui (поиск Dex/IY) ──
+-- самый надёжный сигнал. Исключаем родной чат/консоль Roblox (они под RobloxGui).
 UserInputService.TextBoxFocused:Connect(function(textbox)
 	local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
 	if not playerGui then return end
-	local isOurs = textbox:IsDescendantOf(playerGui)
-	if not isOurs then
-		local underRobloxGui = false
-		local par = textbox
-		while par do
-			if par.Name == "RobloxGui" then underRobloxGui = true break end
-			par = par.Parent
-		end
-		if not underRobloxGui then
-			reportHard("TextBox focused outside PlayerGui (Dex search bar)")
-		end
+	if textbox:IsDescendantOf(playerGui) then return end
+
+	local par = textbox
+	while par do
+		if par.Name == "RobloxGui" then return end -- родной UI Roblox (чат, F9), не флагаем
+		par = par.Parent
 	end
+
+	reportHard("TextBox focused outside PlayerGui (Dex/IY search bar)")
 end)
 
--- ── 2. InputBegan: клик, поглощённый UI вне PlayerGui = CoreGui-панель ──
-local function hasInteractiveGuiUnderCursor()
-	local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
-	if not playerGui then return false end
-	local mousePos = UserInputService:GetMouseLocation() - GuiService:GetGuiInset()
-	local ok, objects = pcall(function()
-		return playerGui:GetGuiObjectsAtPosition(mousePos.X, mousePos.Y)
-	end)
-	if not ok or not objects then return false end
-	for _, gui in ipairs(objects) do
-		local interactive = gui:IsA("TextButton") or gui:IsA("ImageButton")
-			or gui:IsA("TextBox") or gui:IsA("ScrollingFrame")
-		if interactive and gui.Visible then return true end
-	end
-	return false
-end
-
-local clickViolations = 0
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
-	if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
-	if not gameProcessed then return end
-	if hasInteractiveGuiUnderCursor() then return end
-	clickViolations = clickViolations + 1
-	if clickViolations >= 3 then
-		reportHard("click consumed by UI outside PlayerGui (CoreGui panel)")
-		clickViolations = 0
-	end
-end)
-
--- ── 3. Периодические проверки через Heartbeat вместо task.spawn+while ──
+-- ── Периодические проверки через Heartbeat ──
 local assetScanClock = 0
 local structScanClock = 0
-local honeypotClock = 0
 
 local knownAssets = {
 	["rbxassetid://5642383285"] = "Dex Explorer",
@@ -186,8 +153,7 @@ local function doAssetScan()
 				reportHard(knownName)
 				return
 			end
-			local hasPrefix = assetId:find("rbxassetid://")
-			if hasPrefix then
+			if assetId:find("rbxassetid://") then
 				local id = tonumber(assetId:match("%d+"))
 				if id then
 					local infoOk, info = pcall(MarketplaceService.GetProductInfo, MarketplaceService, id, Enum.InfoType.Asset)
@@ -200,64 +166,62 @@ local function doAssetScan()
 	end)
 end
 
+-- структурный скан по ТИПАМ, а не по именам: Dex/IY - это ScreenGui в CoreGui,
+-- не принадлежащий RobloxGui, с большим числом фреймов/кнопок/скроллов внутри.
 local function doStructScan()
 	pcall(function()
 		local CoreGui = game:GetService("CoreGui")
 		if not CoreGui then return end
 		local children = CoreGui:GetChildren()
 		if not children then return end
+
 		for _, gui in ipairs(children) do
-			local guiName = gui.Name
-			local skip = (guiName == "RobloxGui")
-			if not skip then
-				if guiName == "Dex" then
-					local isScreen = gui:IsA("ScreenGui")
-					if isScreen then
-						local hasL = gui:FindFirstChild("ContentFrameL")
-						local hasR = gui:FindFirstChild("ContentFrameR")
-						local hasW = gui:FindFirstChild("WelcomeFrame")
-						if hasL and hasR and hasW then
-							reportHard("Dex Explorer (structure match)")
-						end
-					end
+			if gui.Name ~= "RobloxGui" and gui:IsA("ScreenGui") then
+				-- точные сигнатуры известных сборок
+				local hasL = gui:FindFirstChild("ContentFrameL")
+				local hasR = gui:FindFirstChild("ContentFrameR")
+				local hasW = gui:FindFirstChild("WelcomeFrame")
+				if hasL and hasR and hasW then
+					reportHard("Dex Explorer (structure match)")
 				end
-				local propFrame = gui:FindFirstChild("PropertiesFrame")
-				local saveInst = gui:FindFirstChild("SaveInstance")
-				if propFrame or saveInst then
+				local pf = gui:FindFirstChild("PropertiesFrame")
+				local si = gui:FindFirstChild("SaveInstance")
+				if pf or si then
 					reportHard("Dark Dex (frame signature)")
 				end
-				local exPanel = gui:FindFirstChild("ExplorerPanel")
-				local prPanel = gui:FindFirstChild("PropertiesPanel")
-				if exPanel and prPanel then
-					reportHard("Dex-family explorer (panel signature)")
+				local ep = gui:FindFirstChild("ExplorerPanel")
+				local pp = gui:FindFirstChild("PropertiesPanel")
+				if ep and pp then
+					reportHard("Dex-family (panel signature)")
+				end
+
+				-- эвристика по типам: считаем ScrollingFrame'ы и TextButton'ы внутри.
+				-- у Dex - большой explorer (ScrollingFrame) + много кнопок-нод.
+				-- у IY - командная строка (TextBox) + вывод (ScrollingFrame).
+				local descendants = gui:GetDescendants()
+				local scrolls = 0
+				local textboxes = 0
+				for _, d in ipairs(descendants) do
+					if d:IsA("ScrollingFrame") then
+						scrolls = scrolls + 1
+					elseif d:IsA("TextBox") then
+						textboxes = textboxes + 1
+					end
+				end
+				-- Dex: минимум 2 ScrollingFrame (explorer + properties)
+				if scrolls >= 2 and textboxes >= 1 then
+					reportHard("exploit UI heuristic (scrollframes+textbox in foreign ScreenGui)")
 				end
 			end
 		end
 	end)
 end
 
-local function doHoneypot()
-	pcall(function()
-		local CoreGui = game:GetService("CoreGui")
-		if not CoreGui then return end
-		local hp = setmetatable({CoreGui, {}, newproxy(true), newproxy()}, {__mode = "v"})
-		local waited = 0
-		while hp[2] and hp[3] and hp[4] and waited < 30 do
-			RunService.Heartbeat:Wait()
-			waited = waited + 1
-		end
-		if hp[1] then
-			reportHard("foreign reference holds CoreGui (honeypot)")
-		end
-	end)
-end
-
 RunService.Heartbeat:Connect(function(dt)
-	assetScanClock = assetScanClock + dt
 	structScanClock = structScanClock + dt
-	honeypotClock = honeypotClock + dt
+	assetScanClock = assetScanClock + dt
 
-	if structScanClock >= 5 then
+	if structScanClock >= 3 then
 		structScanClock = 0
 		doStructScan()
 	end
@@ -265,10 +229,6 @@ RunService.Heartbeat:Connect(function(dt)
 		assetScanClock = 0
 		doAssetScan()
 	end
-	if honeypotClock >= 3 then
-		honeypotClock = 0
-		doHoneypot()
-	end
 end)
 
-warn("[antidex] все детекты подключены (connection-based)")
+warn("[antidex] детекты подключены (v2)")
