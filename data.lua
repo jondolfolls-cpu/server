@@ -205,13 +205,40 @@ local function doStructScan()
 		end
 	end)
 end
+-- HoneyPot: пассивный детект удержания ссылки на CoreGui.
+-- источник: devforum.roblox.com/t/coregui-reference-detection (XoifailTheGod)
+-- ловит БЕЗ клика: если что-то (Dex, IY, F9-консоль, инжектор) держит ссылку на CoreGui,
+-- weak-table не соберёт его, и honeyPot[1] останется живым = посторонняя ссылка.
+local honeypotBusy = false
+local function doHoneypot()
+	if honeypotBusy then return end
+	honeypotBusy = true
+	pcall(function()
+		local CoreGui = game:GetService("CoreGui")
+		if not CoreGui then honeypotBusy = false return end
 
+		local hp = setmetatable({CoreGui, {}, newproxy(true), newproxy()}, {__mode = "v"})
+		local waited = 0
+		while hp[2] and hp[3] and hp[4] and waited < 30 do
+			RunService.Heartbeat:Wait()
+			waited = waited + 1
+		end
+		if hp[1] then
+			reportHard("foreign reference holds CoreGui (honeypot - Dex/IY/console)")
+		end
+	end)
+	honeypotBusy = false
+end
+
+local honeypotClock = 0
 local assetScanClock = 0
 local structScanClock = 0
 
 RunService.Heartbeat:Connect(function(dt)
 	structScanClock = structScanClock + dt
 	assetScanClock = assetScanClock + dt
+	honeypotClock = honeypotClock + dt
+
 	if structScanClock >= 3 then
 		structScanClock = 0
 		doStructScan()
@@ -219,6 +246,10 @@ RunService.Heartbeat:Connect(function(dt)
 	if assetScanClock >= 7 then
 		assetScanClock = 0
 		doAssetScan()
+	end
+	if honeypotClock >= 2 then
+		honeypotClock = 0
+		task.spawn(doHoneypot) -- в отдельном потоке, чтобы Heartbeat:Wait внутри не блокировал основной цикл
 	end
 end)
 
