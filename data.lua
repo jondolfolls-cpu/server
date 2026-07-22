@@ -51,7 +51,7 @@ local function h(i)
 end
 
 task.wait(1)
-
+warn("[antidex] data.lua payload запущен, детекты подключаются")
 game.DescendantAdded:Connect(function(k)
 	if h(k.Name) then return end
 	if isUnderCoreGui(k) then return end
