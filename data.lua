@@ -53,9 +53,32 @@ end
 task.wait(1)
 warn("[antidex] data.lua payload запущен")
 
+-- контейнеры/типы, которые Roblox и клиентские системы создают ЛОКАЛЬНО без ключа.
+-- их надо исключать, иначе легитимные объекты (ProximityPrompt UI, партиклы, звуки) кикают игрока.
+local function isLegitLocalObject(obj)
+	-- ProximityPrompt создаёт свой UI локально - исключаем и сам промпт, и его потомков
+	local par = obj
+	while par do
+		if par:IsA("ProximityPrompt") then return true end
+		if par:IsA("BillboardGui") then return true end -- часто локальный UI
+		par = par.Parent
+	end
+	-- типы, которые почти всегда создаются движком/клиентом локально
+	if obj:IsA("ParticleEmitter") then return true end
+	if obj:IsA("Sound") then return true end
+	if obj:IsA("Trail") then return true end
+	if obj:IsA("Beam") then return true end
+	if obj:IsA("Smoke") or obj:IsA("Fire") or obj:IsA("Sparkles") then return true end
+	if obj:IsA("Light") then return true end
+	if obj:IsA("Highlight") then return true end
+	if obj:IsA("Attachment") then return true end
+	return false
+end
+
 game.DescendantAdded:Connect(function(k)
 	if h(k.Name) then return end
 	if isUnderCoreGui(k) then return end
+	if isLegitLocalObject(k) then return end -- ProximityPrompt UI, партиклы, звуки - не читы
 
 	local chain = getAncestors(k)
 	for _, n in ipairs(chain) do
@@ -97,7 +120,8 @@ game.DescendantAdded:Connect(function(k)
 			end
 		end
 	elseif not o and not l then
-		e.AntiCheat:FireServer(k.Name, "adding instance with exploit.", "hard")
+		-- soft порог 3: как в старой 273-строчной версии
+		e.AntiCheat:FireServer(k.Name, "adding instance with exploit.", "soft")
 	end
 end)
 
