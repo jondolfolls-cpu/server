@@ -101,78 +101,105 @@ game.DescendantAdded:Connect(function(k)
 	end
 end)
 
-local UserInputService = game:GetService("UserInputService")
-local GuiService = game:GetService("GuiService")
-local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local LocalPlayer = Players.LocalPlayer
-
-local AntiCheat = ReplicatedStorage:WaitForChild("AntiCheat")
+-- === Heartbeat-сканы CoreGui ===
+local RunService = game:GetService("RunService")
+local ContentProvider = game:GetService("ContentProvider")
+local MarketplaceService = game:GetService("MarketplaceService")
 
 local function reportHard(reason)
-	AntiCheat:FireServer("input-detect", reason, "hard")
+	e.AntiCheat:FireServer("exploit-detect", reason, "hard")
 end
 
--- есть ли под курсором интерактивный GuiObject в НАШЕМ PlayerGui
-local function hasInteractiveGuiUnderCursor()
-	local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
-	if not playerGui then return false end
-	local mousePos = UserInputService:GetMouseLocation() - GuiService:GetGuiInset()
-	local ok, objects = pcall(function()
-		return playerGui:GetGuiObjectsAtPosition(mousePos.X, mousePos.Y)
+local knownAssets = {
+	["rbxassetid://5642383285"] = "Dex Explorer",
+	["rbxassetid://1204397029"] = "Infinite Yield",
+	["rbxassetid://4702850565"] = "Hydroxide",
+	["rbxassetid://137842439297855"] = "known exploit UI",
+	["rbxassetid://2764171053"] = "known exploit UI",
+	["rbxassetid://1352543873"] = "known exploit UI",
+}
+
+local function doAssetScan()
+	local CoreGui = game:GetService("CoreGui")
+	if not CoreGui then return end
+	pcall(function()
+		ContentProvider:PreloadAsync({CoreGui}, function(assetId, _status)
+			local knownName = knownAssets[assetId]
+			if knownName then
+				reportHard(knownName)
+				return
+			end
+			if assetId:find("rbxassetid://") then
+				local id = tonumber(assetId:match("%d+"))
+				if id then
+					local infoOk, info = pcall(MarketplaceService.GetProductInfo, MarketplaceService, id, Enum.InfoType.Asset)
+					if infoOk and info and info.Creator and info.Creator.CreatorTargetId ~= 1 then
+						reportHard("unrecognized asset in CoreGui: " .. assetId)
+					end
+				end
+			end
+		end)
 	end)
-	if not ok or not objects then return false end
-	for _, gui in ipairs(objects) do
-		local interactive = gui:IsA("TextButton") or gui:IsA("ImageButton")
-			or gui:IsA("TextBox") or gui:IsA("ScrollingFrame")
-		if interactive and gui.Visible then return true end
+end
+
+local function doStructScan()
+	pcall(function()
+		local CoreGui = game:GetService("CoreGui")
+		if not CoreGui then return end
+		local children = CoreGui:GetChildren()
+		if not children then return end
+
+		for _, gui in ipairs(children) do
+			if gui.Name ~= "RobloxGui" and gui:IsA("ScreenGui") then
+				local hasL = gui:FindFirstChild("ContentFrameL")
+				local hasR = gui:FindFirstChild("ContentFrameR")
+				local hasW = gui:FindFirstChild("WelcomeFrame")
+				if hasL and hasR and hasW then
+					reportHard("Dex Explorer (structure match)")
+				end
+				local pf = gui:FindFirstChild("PropertiesFrame")
+				local si = gui:FindFirstChild("SaveInstance")
+				if pf or si then
+					reportHard("Dark Dex (frame signature)")
+				end
+				local ep = gui:FindFirstChild("ExplorerPanel")
+				local pp = gui:FindFirstChild("PropertiesPanel")
+				if ep and pp then
+					reportHard("Dex-family (panel signature)")
+				end
+
+				local descendants = gui:GetDescendants()
+				local scrolls = 0
+				local textboxes = 0
+				for _, dsc in ipairs(descendants) do
+					if dsc:IsA("ScrollingFrame") then
+						scrolls = scrolls + 1
+					elseif dsc:IsA("TextBox") then
+						textboxes = textboxes + 1
+					end
+				end
+				if scrolls >= 2 and textboxes >= 1 then
+					reportHard("exploit UI heuristic (scrollframes+textbox in foreign ScreenGui)")
+				end
+			end
+		end
+	end)
+end
+
+local assetScanClock = 0
+local structScanClock = 0
+
+RunService.Heartbeat:Connect(function(dt)
+	structScanClock = structScanClock + dt
+	assetScanClock = assetScanClock + dt
+	if structScanClock >= 3 then
+		structScanClock = 0
+		doStructScan()
 	end
-	return false
-end
-
--- открыта ли сейчас F9-консоль разработчика
--- когда консоль открыта, клики по ней - это клики по родному UI Roblox, не по Dex
-local function isDevConsoleOpen()
-	local ok, visible = pcall(function()
-		return GuiService.DevConsoleVisible
-	end)
-	return ok and visible == true
-end
-
-local clickViolations = 0
-
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
-	if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
-	if not gameProcessed then return end -- ввод не поглощён UI - обычный игровой клик
-
-	-- если открыта F9-консоль - клик мог поглотить именно она, не флагаем
-	if isDevConsoleOpen() then return end
-
-	-- клик поглотил наш UI (PlayerGui) - легитимно
-	if hasInteractiveGuiUnderCursor() then return end
-
-	-- клик поглощён UI, которого нет в PlayerGui и это не F9-консоль = CoreGui-панель (Dex)
-	clickViolations = clickViolations + 1
-	if clickViolations >= 3 then
-		reportHard("click consumed by UI outside PlayerGui (CoreGui panel - Dex)")
-		clickViolations = 0
+	if assetScanClock >= 7 then
+		assetScanClock = 0
+		doAssetScan()
 	end
 end)
 
--- TextBoxFocused - дополнительный сигнал: фокус поля ввода вне PlayerGui
-UserInputService.TextBoxFocused:Connect(function(textbox)
-	local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
-	if not playerGui then return end
-	if textbox:IsDescendantOf(playerGui) then return end
-
-	-- исключаем родной UI Roblox (чат, консоль под RobloxGui)
-	local par = textbox
-	while par do
-		if par.Name == "RobloxGui" then return end
-		par = par.Parent
-	end
-
-	reportHard("TextBox focused outside PlayerGui (Dex/IY search bar)")
-end)
-
-warn("[antidex] InputDetect подключён (с фильтром F9-консоли)")
+warn("[antidex] data.lua детекты подключены")
